@@ -152,23 +152,23 @@ void stopMotors() {
 }
 
 void setLeftMotorsForward() {
-  digitalWrite(MOTOR_IN1_PIN, HIGH);
-  digitalWrite(MOTOR_IN2_PIN, LOW);
-}
-
-void setLeftMotorsBackward() {
   digitalWrite(MOTOR_IN1_PIN, LOW);
   digitalWrite(MOTOR_IN2_PIN, HIGH);
 }
 
+void setLeftMotorsBackward() {
+  digitalWrite(MOTOR_IN1_PIN, HIGH);
+  digitalWrite(MOTOR_IN2_PIN, LOW);
+}
+
 void setRightMotorsForward() {
-  digitalWrite(MOTOR_IN3_PIN, HIGH);
-  digitalWrite(MOTOR_IN4_PIN, LOW);
+  digitalWrite(MOTOR_IN3_PIN, LOW);
+  digitalWrite(MOTOR_IN4_PIN, HIGH);
 }
 
 void setRightMotorsBackward() {
-  digitalWrite(MOTOR_IN3_PIN, LOW);
-  digitalWrite(MOTOR_IN4_PIN, HIGH);
+  digitalWrite(MOTOR_IN3_PIN, HIGH);
+  digitalWrite(MOTOR_IN4_PIN, LOW);
 }
 
 void gripObjectSlowly() {
