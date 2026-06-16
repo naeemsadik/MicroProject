@@ -5,6 +5,8 @@ serial:
 camera:
   index: 0
   qr_timeout_s: 30
+  width: 640
+  height: 480
 
 map:
   image: maps/floorplan.png
@@ -29,3 +31,9 @@ odometry:
   wheel_base_cm: 15.0
   ticks_per_revolution: 20
   yaw_sign: 1.0
+
+admin:
+  host: 0.0.0.0
+  port: 8080
+  manual_speed: 120
+  nudge_duration_s: 0.35
