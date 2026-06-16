@@ -1,0 +1,12 @@
+home: [20, 20]
+
+slots:
+  R1C1:
+    drop: [180, 180]
+    approach: [165, 180]
+  R1C2:
+    drop: [220, 180]
+    approach: [205, 180]
+  R2C1:
+    drop: [180, 220]
+    approach: [165, 220]

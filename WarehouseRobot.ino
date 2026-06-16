@@ -13,6 +13,11 @@ const int MOTOR_IN2_PIN = 33;  // Left side motor direction B
 const int MOTOR_IN3_PIN = 32;  // Right side motor direction A
 const int MOTOR_IN4_PIN = 27;  // Right side motor direction B
 
+// Set these to the ENA/ENB pins if your motor driver has enable pins connected.
+// Leave as -1 if the driver enable jumpers are installed or your driver has no enable pins.
+const int MOTOR_LEFT_ENABLE_PIN = -1;
+const int MOTOR_RIGHT_ENABLE_PIN = -1;
+
 const int COMPASS_SDA_PIN = 26;
 const int COMPASS_SCL_PIN = 4;
 
@@ -56,6 +61,14 @@ void setup() {
   pinMode(MOTOR_IN2_PIN, OUTPUT);
   pinMode(MOTOR_IN3_PIN, OUTPUT);
   pinMode(MOTOR_IN4_PIN, OUTPUT);
+  if (MOTOR_LEFT_ENABLE_PIN >= 0) {
+    pinMode(MOTOR_LEFT_ENABLE_PIN, OUTPUT);
+    digitalWrite(MOTOR_LEFT_ENABLE_PIN, HIGH);
+  }
+  if (MOTOR_RIGHT_ENABLE_PIN >= 0) {
+    pinMode(MOTOR_RIGHT_ENABLE_PIN, OUTPUT);
+    digitalWrite(MOTOR_RIGHT_ENABLE_PIN, HIGH);
+  }
   stopMotors();
 
   pinMode(ULTRASONIC_TRIG_PIN, OUTPUT);
@@ -65,8 +78,14 @@ void setup() {
   Wire.begin(COMPASS_SDA_PIN, COMPASS_SCL_PIN);
   Serial.println("Compass I2C initialized on SDA GPIO26 and SCL GPIO4.");
 
-  servo1.attach(SERVO_1_PIN);
-  servo2.attach(SERVO_2_PIN);
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  servo1.setPeriodHertz(50);
+  servo2.setPeriodHertz(50);
+  servo1.attach(SERVO_1_PIN, 500, 2500);
+  servo2.attach(SERVO_2_PIN, 500, 2500);
+  writeServosNow();
+  delay(SERVO_SETTLE_DELAY_MS);
 
   Serial.println("Opening gripper...");
   releaseObjectSlowly();
@@ -149,6 +168,11 @@ void stopMotors() {
   digitalWrite(MOTOR_IN2_PIN, LOW);
   digitalWrite(MOTOR_IN3_PIN, LOW);
   digitalWrite(MOTOR_IN4_PIN, LOW);
+}
+
+void writeServosNow() {
+  servo1.write(servo1CurrentAngle);
+  servo2.write(servo2CurrentAngle);
 }
 
 void setLeftMotorsForward() {
