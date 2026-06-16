@@ -1,3 +1,47 @@
+/*
+ * Warehouse Rover - ESP32 Low-Level Controller Firmware
+ *
+ * Target board: ESP32 (e.g. DOIT ESP32 DEVKIT V1)
+ * Connected to: RPi4 over USB serial
+ *
+ * Pin map (matches uppdatedPinDiagram.md):
+ *   Gripper servo 1   -> GPIO18
+ *   Gripper servo 2   -> GPIO19
+ *   Ultrasonic TRIG   -> GPIO12
+ *   Ultrasonic ECHO   -> GPIO13
+ *   L298N IN1 (left)  -> GPIO25
+ *   L298N IN2 (left)  -> GPIO33
+ *   L298N IN3 (right) -> GPIO32
+ *   L298N IN4 (right) -> GPIO27
+ *   MPU6050 SDA       -> GPIO21
+ *   MPU6050 SCL       -> GPIO22
+ *
+ * Reserved (encoders if added later):
+ *   GPIO34 - left encoder signal
+ *   GPIO35 - right encoder signal
+ *
+ * Serial protocol (line based, terminated with '\n'):
+ *   From RPi4:
+ *     <V,left_speed,right_speed>  - signed motor PWM, range -255..255
+ *     <G,OPEN>                    - open gripper
+ *     <G,CLOSE>                   - close gripper
+ *     <PING>                      - handshake
+ *     <RESET_TICKS>              - zero encoder counters and yaw
+ *   To RPi4:
+ *     <READY>                     - sent once at boot
+ *     <PONG>                      - reply to <PING>
+ *     <T,distance_cm,left_ticks,right_ticks,yaw_deg>
+ *
+ * Notes:
+ *   - The L298N ENA/ENB jumpers are assumed to be installed.
+ *     If you wire ENA/ENB to ESP32 PWM pins, set MOTOR_LEFT_ENABLE_PIN
+ *     and MOTOR_RIGHT_ENABLE_PIN to those pins.
+ *   - The HC-SR04 echo pin is 5V; the ESP32 is 3.3V on its I/O.
+ *     Use a voltage divider on ECHO if you power the sensor from 5V.
+ *   - The MPU6050 is an accelerometer/gyro, not a compass.
+ *     Yaw is integrated from the gyro Z rate and will drift.
+ */
+
 #include <ESP32Servo.h>
 #include <Wire.h>
 
@@ -5,8 +49,8 @@
 const int SERVO_1_PIN = 18;
 const int SERVO_2_PIN = 19;
 
-const int ULTRASONIC_TRIG_PIN = 23;
-const int ULTRASONIC_ECHO_PIN = 22;
+const int ULTRASONIC_TRIG_PIN = 12;
+const int ULTRASONIC_ECHO_PIN = 13;
 
 const int MOTOR_IN1_PIN = 25;  // Left side motor direction A
 const int MOTOR_IN2_PIN = 33;  // Left side motor direction B
@@ -23,11 +67,13 @@ const int MOTOR_RIGHT_ENABLE_PIN = -1;
 const int LEFT_ENCODER_PIN = -1;
 const int RIGHT_ENCODER_PIN = -1;
 
-const int MPU_SDA_PIN = 26;
-const int MPU_SCL_PIN = 4;
+const int MPU_SDA_PIN = 21;
+const int MPU_SCL_PIN = 22;
 const uint8_t MPU6050_ADDR = 0x68;
 
 // -------------------- Gripper tuning --------------------
+// Tune these angles for your physical gripper.
+// If a servo moves the wrong way, swap its open and closed values.
 const int SERVO_1_OPEN_ANGLE = 25;
 const int SERVO_1_CLOSED_ANGLE = 95;
 const int SERVO_2_OPEN_ANGLE = 155;
@@ -106,6 +152,9 @@ void setup() {
   servo1.attach(SERVO_1_PIN, 500, 2500);
   servo2.attach(SERVO_2_PIN, 500, 2500);
   writeServosNow();
+
+  // Open the gripper once at boot so the robot is ready to receive a package.
+  releaseObjectSlowly();
 
   Serial.println("<READY>");
 }

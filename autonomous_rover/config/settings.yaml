@@ -1,5 +1,5 @@
 serial:
-  port: /dev/ttyUSB0
+  port: /dev/ttyACM0
   baudrate: 115200
 
 camera:
@@ -12,7 +12,7 @@ map:
   image: maps/floorplan.png
   grid: maps/occupancy_grid.npy
   resolution_cm_per_px: 1.0
-  robot_radius_cm: 18.0
+  robot_radius_cm: 4.0
 
 slots:
   file: config/warehouse_slots.yaml
@@ -24,16 +24,31 @@ navigation:
   loop_hz: 10
   target_tolerance_px: 5.0
   max_mission_seconds: 180
+  # Maximum speed (PWM magnitude) for autonomous driving when the ESP32 has
+  # no wheel encoders. Keep this small for safety.
+  max_drive_speed: 90
+  # Maximum angular speed (PWM magnitude) used to correct heading.
+  max_turn_speed: 90
 
 odometry:
+  # Set to true only after wheel encoders are wired and the ESP32 is
+  # reading them. Without encoders this should stay false so that the
+  # RPi4 uses dead-reckoning (timed) motion from a known home pose.
   enabled: false
   wheel_diameter_cm: 6.5
   wheel_base_cm: 15.0
   ticks_per_revolution: 20
   yaw_sign: 1.0
 
+dead_reckoning:
+  # Approximate forward speed of the robot in cm/s. Calibrate by
+  # commanding forward for a fixed time and measuring the distance.
+  forward_speed_cm_per_s: 20.0
+  backward_speed_cm_per_s: 18.0
+  turn_speed_deg_per_s: 60.0
+
 admin:
   host: 0.0.0.0
   port: 8080
-  manual_speed: 120
+  manual_speed: 90
   nudge_duration_s: 0.35

@@ -1,5 +1,7 @@
-numpy
-opencv-contrib-python
-matplotlib
-pyserial
-PyYAML
+numpy>=1.20
+opencv-contrib-python>=4.5
+matplotlib>=3.5
+pyserial>=3.5
+PyYAML>=6.0
+qrcode>=7.3
+Pillow>=9.0

@@ -1,3 +1,29 @@
+/*
+ * Warehouse Robot - Standalone ESP32 Demo
+ *
+ * This is the legacy stand-alone demo sketch. It runs a fixed timed
+ * sequence on boot, services a small WiFi admin panel, and otherwise
+ * listens for USB serial commands.
+ *
+ * For RPi4-driven navigation, upload the sketch in:
+ *   autonomous_rover/esp32/rover_firmware/rover_firmware.ino
+ *
+ * Pin map (matches uppdatedPinDiagram.md):
+ *   Servo 1        -> GPIO18
+ *   Servo 2        -> GPIO19
+ *   Ultrasonic TRIG -> GPIO12
+ *   Ultrasonic ECHO -> GPIO13
+ *   L298N IN1 (L)   -> GPIO25
+ *   L298N IN2 (L)   -> GPIO33
+ *   L298N IN3 (R)   -> GPIO32
+ *   L298N IN4 (R)   -> GPIO27
+ *   MPU6050 SDA     -> GPIO21
+ *   MPU6050 SCL     -> GPIO22
+ *
+ * NOTE: This file is kept for the standalone timed demo only.
+ *       When controlled by the RPi4, use rover_firmware.ino instead.
+ */
+
 #include <ESP32Servo.h>
 #include <ESPmDNS.h>
 #include <WebServer.h>
@@ -17,7 +43,7 @@ const int MOTOR_IN3_PIN = 32;  // Right side motor direction A
 const int MOTOR_IN4_PIN = 27;  // Right side motor direction B
 
 // Set these to the ENA/ENB pins if your motor driver has enable pins connected.
-// Leave as -1 if the driver enable jumpers are installed or your driver has no enable pins.
+// Leave as -1 if the driver enable jumpers are installed.
 const int MOTOR_LEFT_ENABLE_PIN = -1;
 const int MOTOR_RIGHT_ENABLE_PIN = -1;
 
@@ -25,20 +51,16 @@ const int COMPASS_SDA_PIN = 21;
 const int COMPASS_SCL_PIN = 22;
 
 // -------------------- Gripper tuning --------------------
-// Tune these angles for your physical gripper.
-// If a servo moves the wrong way, swap its open and closed values.
 const int SERVO_1_OPEN_ANGLE = 25;
 const int SERVO_1_CLOSED_ANGLE = 95;
-
 const int SERVO_2_OPEN_ANGLE = 155;
 const int SERVO_2_CLOSED_ANGLE = 85;
-
 const int SERVO_STEP_DELAY_MS = 25;
 const int SERVO_SETTLE_DELAY_MS = 500;
 
 // -------------------- Ultrasonic tuning --------------------
 const float OBJECT_DISTANCE_THRESHOLD_CM = 20.0;
-const unsigned long ULTRASONIC_TIMEOUT_US = 30000;  // About 5 meters max.
+const unsigned long ULTRASONIC_TIMEOUT_US = 30000;
 
 // -------------------- Movement durations --------------------
 const unsigned long FORWARD_DURATION_MS = 10000;

@@ -2,7 +2,13 @@ import time
 
 import cv2
 
-from warehouse_slots import normalize_slot_id
+try:
+    from warehouse_slots import normalize_slot_id
+except ImportError:  # allow running this file directly
+    import os
+    import sys
+    sys.path.insert(0, os.path.dirname(__file__))
+    from warehouse_slots import normalize_slot_id
 
 
 class QRScanner:

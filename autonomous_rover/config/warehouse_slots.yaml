@@ -1,12 +1,44 @@
 home: [20, 20]
 
+# Slot coordinates in (x, y) image pixels.
+# x grows to the right, y grows downward.
+# Each slot has a "drop" point and an optional "approach" point in
+# front of the shelf. The robot plans to the approach point first.
+#
+# The mock floorplan (maps/floorplan.png) has three vertical shelves
+# at x=40..60, x=100..120, x=150..170. Free aisles are:
+#   left  : x=4..39
+#   mid-1 : x=61..99
+#   mid-2 : x=121..149
+#   right : x=171..195
 slots:
+  # Right-hand aisle (closest to the third shelf)
   R1C1:
-    drop: [180, 180]
-    approach: [165, 180]
+    drop: [190, 50]
+    approach: [180, 50]
   R1C2:
-    drop: [220, 180]
-    approach: [205, 180]
+    drop: [190, 90]
+    approach: [180, 90]
+  R1C3:
+    drop: [190, 130]
+    approach: [180, 130]
+  # Middle aisle (between shelf 1 and shelf 2)
   R2C1:
-    drop: [180, 220]
-    approach: [165, 220]
+    drop: [95, 50]
+    approach: [90, 50]
+  R2C2:
+    drop: [95, 90]
+    approach: [90, 90]
+  R2C3:
+    drop: [95, 130]
+    approach: [90, 130]
+  # Middle aisle (between shelf 2 and shelf 3)
+  R3C1:
+    drop: [145, 50]
+    approach: [140, 50]
+  R3C2:
+    drop: [145, 90]
+    approach: [140, 90]
+  R3C3:
+    drop: [145, 130]
+    approach: [140, 130]
