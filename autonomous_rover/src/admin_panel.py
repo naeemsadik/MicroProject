@@ -145,6 +145,130 @@ class CameraWorker:
             camera.release()
 
 
+# ============================================================== auto-drive
+class AutoDriver(threading.Thread):
+    """
+    Background thread that runs an autonomous ``MissionController``
+    mission to a given slot.
+
+    Status values:
+        starting  – thread spawned, not yet planning
+        planning  – A* + waypoint pruning in progress
+        driving   – ESP32 is moving toward the waypoints
+        picking   – gripper closing on the package at start
+        delivering – gripper opening at the destination
+        done      – mission finished successfully
+        error     – an exception was raised (see ``error`` field)
+        aborted   – user requested stop
+    """
+
+    def __init__(self, admin_state, slot_id):
+        super().__init__(daemon=True)
+        self.admin_state = admin_state
+        self.slot_id = slot_id
+        self.status = "starting"
+        self.waypoints_done = 0
+        self.waypoints_total = 0
+        self.error = None
+        self.started_at = time.monotonic()
+        self._stop_requested = threading.Event()
+        self._lock = threading.Lock()
+
+    def request_stop(self):
+        self._stop_requested.set()
+        with self._lock:
+            self.status = "aborted"
+
+    def _set_status(self, value):
+        with self._lock:
+            if self.status != "aborted":
+                self.status = value
+        self.admin_state.log(f"[AUTO] {value}.")
+
+    def snapshot(self):
+        with self._lock:
+            return {
+                "status": self.status,
+                "slot_id": self.slot_id,
+                "waypoints_done": self.waypoints_done,
+                "waypoints_total": self.waypoints_total,
+                "elapsed_s": round(time.monotonic() - self.started_at, 1),
+                "error": self.error,
+            }
+
+    def run(self):
+        try:
+            # Import here to avoid a hard import cost at admin-panel
+            # startup (and to keep the admin panel importable even if
+            # mission_controller has a transient bug).
+            from mission_controller import MissionController
+
+            self.admin_state.log(f"[AUTO] Starting autonomous drive to {self.slot_id}.")
+            controller = MissionController(
+                settings_path=self.admin_state.settings_path,
+                qr_override=self.slot_id,
+                dry_run=False,
+            )
+
+            if self._stop_requested.is_set():
+                return
+
+            # Plan (A*) and count waypoints for the UI.
+            from warehouse_slots import normalize_slot_id
+            from planner import AStarPlanner
+            destination = controller.slots.get_destination(normalize_slot_id(self.slot_id))
+            target = destination.navigation_target
+            pose = controller.odometry.pose
+            start = (int(round(pose[0])), int(round(pose[1])))
+            dense = controller.planner.plan_path(start, target)
+            if not dense:
+                raise RuntimeError(f"No path from {start} to {target}")
+            waypoints = controller.planner.prune_path(dense)
+            if waypoints and waypoints[0] == start:
+                waypoints.pop(0)
+            self.waypoints_total = len(waypoints)
+            self._set_status("driving")
+
+            # Patch the mission's waypoint follower so we can update
+            # the "waypoints done" counter as the robot progresses.
+            follow_waypoints = controller._follow_waypoints
+            driver_self = self
+
+            def _instrumented_follow(waypoints_in):
+                remaining = list(waypoints_in)
+                total = len(remaining)
+                while remaining and not driver_self._stop_requested.is_set():
+                    # Re-expose the remaining list to the status JSON.
+                    with driver_self._lock:
+                        driver_self.waypoints_done = total - len(remaining)
+                    # Pop one waypoint at a time, delegating to the
+                    # original method which already handles steering,
+                    # obstacle stop, and dead-reckoning.
+                    controller._follow_waypoints = follow_waypoints
+                    controller._follow_waypoints(remaining[:1])
+                    remaining.pop(0)
+                with driver_self._lock:
+                    driver_self.waypoints_done = total - len(remaining)
+                if driver_self._stop_requested.is_set():
+                    raise RuntimeError("auto-drive aborted by user")
+
+            controller._follow_waypoints = _instrumented_follow
+            controller.run_once()
+            self._set_status("done")
+            self.admin_state.log(f"[AUTO] Delivery to {self.slot_id} complete.")
+        except Exception as exc:
+            with self._lock:
+                if self.status != "aborted":
+                    self.status = "error"
+                self.error = str(exc)
+            self.admin_state.log(f"[AUTO] Aborted: {exc}")
+        finally:
+            try:
+                self.admin_state.esp32.stop()
+            except Exception:
+                pass
+
+
 # ============================================================== admin state
 class AdminState:
     def __init__(self, settings_path=None):
@@ -175,6 +299,11 @@ class AdminState:
         self.manual_lock = threading.Lock()
         self.last_command = "none"
         self.pose = self._initial_pose()
+
+        # Auto-drive state. `self.auto_driver` is None when idle, an
+        # `AutoDriver` instance when a mission is running.
+        self.auto_driver = None
+        self.auto_lock = threading.Lock()
 
     def start(self):
         self.camera.start()
@@ -342,6 +471,37 @@ class AdminState:
             with self.manual_lock:
                 self.manual_busy = False
 
+    # --------------------------------------------------------- auto-drive
+    def start_auto_drive(self, slot_id):
+        """
+        Launch an autonomous drive to ``slot_id`` in a background thread.
+
+        Returns ``(ok: bool, payload: dict)``. ``ok=False`` and an
+        ``error`` field is returned if a mission is already running.
+        """
+        with self.auto_lock:
+            if self.auto_driver is not None and self.auto_driver.is_alive():
+                return False, {"error": "auto-drive already running"}
+            self.auto_driver = AutoDriver(self, slot_id)
+            self.auto_driver.start()
+        return True, {"auto_drive": self.auto_drive_status()}
+
+    def stop_auto_drive(self):
+        """Best-effort stop: halts the motors and asks the loop to abort."""
+        with self.auto_lock:
+            driver = self.auto_driver
+        if driver is not None:
+            driver.request_stop()
+        self.esp32.stop()
+        return {"auto_drive": self.auto_drive_status()}
+
+    def auto_drive_status(self):
+        with self.auto_lock:
+            driver = self.auto_driver
+        if driver is None:
+            return {"status": "idle"}
+        return driver.snapshot()
+
     # --------------------------------------------------------- status json
     def status(self):
         camera = self.camera.get_snapshot()
@@ -364,6 +524,7 @@ class AdminState:
             },
             "manual_busy": self.manual_busy,
             "last_command": self.last_command,
+            "auto_drive": self.auto_drive_status(),
             "slots": sorted(self.slots.slots.keys()),
             "logs": self.get_logs(),
         }
@@ -406,18 +567,39 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path != "/api/command":
-            self.send_error(404, "Not found")
+        params = urllib.parse.parse_qs(parsed.query)
+
+        if parsed.path == "/api/command":
+            action = params.get("action", [""])[0]
+            try:
+                self.state.send_action(action)
+                self.send_json({"ok": True})
+            except Exception as exc:
+                self.state.log(f"Command failed: {exc}")
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
             return
 
-        params = urllib.parse.parse_qs(parsed.query)
-        action = params.get("action", [""])[0]
-        try:
-            self.state.send_action(action)
-            self.send_json({"ok": True})
-        except Exception as exc:
-            self.state.log(f"Command failed: {exc}")
-            self.send_json({"ok": False, "error": str(exc)}, status=400)
+        if parsed.path == "/api/drive":
+            action = params.get("action", ["start"])[0]
+            if action == "stop":
+                payload = self.state.stop_auto_drive()
+                self.send_json({"ok": True, **payload})
+                return
+            # action == "start"
+            slot_id = params.get("slot", [""])[0]
+            try:
+                ok, payload = self.state.start_auto_drive(slot_id)
+            except Exception as exc:
+                self.state.log(f"Auto-drive failed to start: {exc}")
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            if ok:
+                self.send_json({"ok": True, **payload})
+            else:
+                self.send_json({"ok": False, **payload}, status=409)
+            return
+
+        self.send_error(404, "Not found")
 
     def stream_video(self):
         self.send_response(200)
@@ -529,6 +711,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="card"><div class="label">Distance</div><div id="distance" class="value">-</div></div>
         <div class="card"><div class="label">Yaw</div><div id="yaw" class="value">-</div></div>
         <div class="card"><div class="label">Uptime</div><div id="uptime" class="value">-</div></div>
+        <div class="card"><div class="label">Auto-drive</div><div id="autoDrive" class="value">idle</div></div>
       </div>
     </section>
     <section>
@@ -542,6 +725,20 @@ INDEX_HTML = r"""<!doctype html>
         <button class="secondary" onclick="cmd('gripper_close')">Close Gripper</button>
       </div>
       <p id="commandResult"></p>
+    </section>
+    <section>
+      <h2>Auto-drive</h2>
+      <p style="margin: 0 0 8px 0; color: #9ca3af; font-size: 13px;">
+        Plan a path with A* and follow it autonomously. The gripper will
+        close at the start (pick up) and open at the destination (drop).
+      </p>
+      <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+        <label for="slotSelect" style="color: #9ca3af; font-size: 13px;">Slot:</label>
+        <select id="slotSelect" style="background:#0f172a; color:#e5e7eb; border:1px solid #374151; border-radius:6px; padding:8px;"></select>
+        <button id="driveStartBtn" onclick="driveStart()">Start auto-drive</button>
+        <button class="stop" id="driveStopBtn" onclick="driveStop()" disabled>Stop</button>
+      </div>
+      <p id="driveStatus" style="margin-top: 10px; font-family: monospace;">Status: idle</p>
     </section>
     <section>
       <h2>Destination</h2>
@@ -570,6 +767,29 @@ INDEX_HTML = r"""<!doctype html>
         document.getElementById('destination').textContent = JSON.stringify({destination: data.destination, route: data.route}, null, 2);
         document.getElementById('logs').textContent = data.logs.join('\n');
         document.getElementById('slots').innerHTML = data.slots.map(s => '<li>' + s + '</li>').join('');
+
+        // Auto-drive status.
+        const ad = data.auto_drive || {status: 'idle'};
+        const adText = ad.status === 'idle'
+          ? 'idle'
+          : (ad.slot_id ? ad.slot_id + ' - ' + ad.status : ad.status)
+            + (ad.waypoints_total ? ' (' + ad.waypoints_done + '/' + ad.waypoints_total + ')' : '')
+            + (ad.error ? ' - ' + ad.error : '');
+        document.getElementById('autoDrive').textContent = adText;
+        document.getElementById('driveStatus').textContent = 'Status: ' + adText;
+        document.getElementById('driveStartBtn').disabled = (ad.status !== 'idle' && ad.status !== 'done' && ad.status !== 'error' && ad.status !== 'aborted');
+        document.getElementById('driveStopBtn').disabled = (ad.status === 'idle' || ad.status === 'done' || ad.status === 'error' || ad.status === 'aborted');
+
+        // Populate the slot selector the first time we see slots.
+        const sel = document.getElementById('slotSelect');
+        if (sel.options.length === 0 && data.slots && data.slots.length > 0) {
+          for (const s of data.slots) {
+            const opt = document.createElement('option');
+            opt.value = s;
+            opt.textContent = s;
+            sel.appendChild(opt);
+          }
+        }
       } catch (e) {
         // ignore transient fetch errors
       }
@@ -580,6 +800,21 @@ INDEX_HTML = r"""<!doctype html>
       const res = await fetch('/api/command?action=' + encodeURIComponent(action), {method: 'POST'});
       const data = await res.json();
       document.getElementById('commandResult').textContent = data.ok ? 'Sent: ' + action : data.error;
+      refresh();
+    }
+    async function driveStart() {
+      const slot = document.getElementById('slotSelect').value;
+      const res = await fetch('/api/drive?action=start&slot=' + encodeURIComponent(slot), {method: 'POST'});
+      const data = await res.json();
+      document.getElementById('driveStatus').textContent = data.ok
+        ? 'Status: starting drive to ' + slot
+        : 'Status: error - ' + (data.error || 'unknown');
+      refresh();
+    }
+    async function driveStop() {
+      const res = await fetch('/api/drive?action=stop', {method: 'POST'});
+      const data = await res.json();
+      document.getElementById('driveStatus').textContent = 'Status: stop requested';
       refresh();
     }
     setInterval(refresh, 1000);

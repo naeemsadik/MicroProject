@@ -20,6 +20,10 @@
 #     python src/admin_panel.py
 # Or directly without activating:
 #     .venv/bin/python src/admin_panel.py
+#
+# The admin panel is the SINGLE entry point. It does everything:
+# camera stream, manual driving, gripper, and auto-drive to a
+# detected QR slot. There is no separate "main.py" anymore.
 
 set -euo pipefail
 
@@ -90,19 +94,18 @@ cat <<EOF
 
 ==> Setup complete.
 
-Run the admin panel with:
-    source $VENV_DIR/bin/activate
-    python src/admin_panel.py
+The admin panel is the single entry point. To start the robot:
 
-Or directly without activating the venv:
     $VENV_DIR/bin/python src/admin_panel.py
 
 Then open http://<RPi4-IP>:8080 from a browser on the same network.
 
-Run a mission (dry-run first):
-    $VENV_DIR/bin/python src/main.py --qr R1C1 --dry-run
-    $VENV_DIR/bin/python src/main.py --qr R1C1
+From the admin panel you can:
+  * watch the live USB camera feed
+  * drive manually with the on-screen buttons
+  * open / close the gripper
+  * scan a QR and click "Drive to slot" for autonomous delivery
 
-Run the unit tests:
+Run the unit tests (optional):
     $VENV_DIR/bin/python run_tests.py
 EOF
