@@ -5,8 +5,8 @@
 const int SERVO_1_PIN = 18;
 const int SERVO_2_PIN = 19;
 
-const int ULTRASONIC_TRIG_PIN = 23;
-const int ULTRASONIC_ECHO_PIN = 22;
+const int ULTRASONIC_TRIG_PIN = 12;
+const int ULTRASONIC_ECHO_PIN = 13;
 
 const int MOTOR_IN1_PIN = 25;  // Left side motor direction A
 const int MOTOR_IN2_PIN = 33;  // Left side motor direction B
@@ -18,8 +18,8 @@ const int MOTOR_IN4_PIN = 27;  // Right side motor direction B
 const int MOTOR_LEFT_ENABLE_PIN = -1;
 const int MOTOR_RIGHT_ENABLE_PIN = -1;
 
-const int COMPASS_SDA_PIN = 26;
-const int COMPASS_SCL_PIN = 4;
+const int COMPASS_SDA_PIN = 21;
+const int COMPASS_SCL_PIN = 22;
 
 // -------------------- Gripper tuning --------------------
 // Tune these angles for your physical gripper.
@@ -76,7 +76,7 @@ void setup() {
   digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
 
   Wire.begin(COMPASS_SDA_PIN, COMPASS_SCL_PIN);
-  Serial.println("Compass I2C initialized on SDA GPIO26 and SCL GPIO4.");
+  Serial.println("MPU6050 I2C initialized on SDA GPIO21 and SCL GPIO22.");
 
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
