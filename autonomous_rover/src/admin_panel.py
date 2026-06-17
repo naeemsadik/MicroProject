@@ -160,12 +160,16 @@ class PosePublisher(threading.Thread):
         super().__init__(daemon=True)
         self.controller = controller
         self.admin_state = admin_state
-        self._stop = stop_event
+        # NOTE: must NOT be named ``self._stop`` -- Thread._stop() is the
+        # internal method Thread.join() invokes while waiting on the
+        # thread to finish, and shadowing it with an Event makes
+        # join() raise "TypeError: 'Event' object is not callable".
+        self.stop_event = stop_event
         self.period = 1.0 / max(hz, 0.5)
 
     def run(self):
         next_t = time.monotonic()
-        while not self._stop.is_set():
+        while not self.stop_event.is_set():
             try:
                 pose = self.controller.odometry.pose
                 self.admin_state.set_pose(pose[0], pose[1], pose[2], source="auto")
@@ -175,7 +179,7 @@ class PosePublisher(threading.Thread):
             sleep_for = next_t - time.monotonic()
             if sleep_for > 0:
                 # Wait on the event so we exit quickly on stop.
-                self._stop.wait(sleep_for)
+                self.stop_event.wait(sleep_for)
             else:
                 # Falling behind; resync to avoid runaway.
                 next_t = time.monotonic()
@@ -268,7 +272,6 @@ class AutoDriver(threading.Thread):
             else:
                 destination = controller.slots.get_destination(normalize_slot_id(self.slot_id))
                 target = destination.navigation_target
-            target = destination.navigation_target
             pose = controller.odometry.pose
             start = (int(round(pose[0])), int(round(pose[1])))
             dense = controller.planner.plan_path(start, target)
