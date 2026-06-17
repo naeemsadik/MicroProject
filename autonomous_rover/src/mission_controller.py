@@ -41,7 +41,7 @@ class MissionController:
     The mode is selected by ``odometry.enabled`` in ``config/settings.yaml``.
     """
 
-    def __init__(self, settings_path=None, qr_override=None, dry_run=False, regenerate_map=False):
+    def __init__(self, settings_path=None, qr_override=None, dry_run=False, regenerate_map=False, esp32=None):
         self.project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         self.settings_path = settings_path or self._project_path("config/settings.yaml")
         self.settings = self._load_settings(self.settings_path)
@@ -50,11 +50,18 @@ class MissionController:
         self.regenerate_map = regenerate_map
         self.odometry_enabled = bool(self.settings.get("odometry", {}).get("enabled", False))
 
-        serial_cfg = self.settings["serial"]
-        self.esp32 = ESP32Interface(
-            port=serial_cfg.get("port", "/dev/ttyACM0"),
-            baudrate=int(serial_cfg.get("baudrate", 115200)),
-        )
+        if esp32 is not None:
+            # Reuse the caller-provided link (e.g. the admin panel's
+            # ESP32Interface) so we don't open /dev/ttyACM0 twice --
+            # the second open resets the ESP32 USB-CDC and triggers
+            # Errno 5 storms.
+            self.esp32 = esp32
+        else:
+            serial_cfg = self.settings["serial"]
+            self.esp32 = ESP32Interface(
+                port=serial_cfg.get("port", "/dev/ttyACM0"),
+                baudrate=int(serial_cfg.get("baudrate", 115200)),
+            )
         if self.esp32.simulation_mode:
             print("[MISSION] ESP32 is not connected; switching to dry-run navigation.")
             self.dry_run = True

@@ -34,6 +34,21 @@ class ESP32Interface:
             <T,distance_cm,left_ticks,right_ticks,yaw_deg>
             <PONG>
             <READY>
+
+    Resilience:
+        The USB-CDC bus on Linux resets the ESP32 every time another
+        process opens /dev/ttyACM0 (which is what causes the
+        "device reports readiness to read but returned no data"
+        / Errno 5 storms when both the admin panel and the
+        MissionController open their own ESP32Interface). To cope:
+
+        * A single ``ESP32Interface`` per process should own the port.
+        * If a read or write raises an I/O error, the read loop
+          backs off briefly, closes the broken handle, and tries
+          to reopen the same port once. After a successful reopen
+          normal operation resumes. After a failed reopen we drop
+          back to simulation mode so the rest of the app keeps
+          working instead of throwing on every command.
     """
 
     def __init__(self, port=None, baudrate=115200):
@@ -42,6 +57,12 @@ class ESP32Interface:
         self.ser = None
         self.simulation_mode = True
         self._last_pong = False
+        self._port = port
+        self._baudrate = baudrate
+        self._reconnect_lock = threading.Lock()
+        self._closed = False
+        self._reconnect_attempts = 0
+        self._max_reconnect_attempts = 3
 
         if port and str(port).upper() != "NONE":
             if serial is None:
@@ -49,18 +70,41 @@ class ESP32Interface:
                 print("[COMMS] Falling back to SIL Simulation Mock Mode.")
                 return
 
-            try:
-                self.ser = serial.Serial(port, baudrate, timeout=1)
-                self.simulation_mode = False
-                print(f"[COMMS] Real ESP32 connection established on port: {port}")
-
-                self.read_thread = threading.Thread(target=self._hardware_read_loop, daemon=True)
-                self.read_thread.start()
-            except Exception as exc:
-                print(f"[COMMS] Cannot connect to physical hardware: {exc}")
-                print("[COMMS] Falling back to SIL Simulation Mock Mode.")
+            self._open_serial(initial=True)
         else:
             print("[COMMS] No hardware port provided. Running in SIL Simulation Mock Mode.")
+
+    def _open_serial(self, initial=False):
+        """Open (or reopen) the serial port. Sets ``simulation_mode``
+        accordingly and starts the read thread on a fresh handle."""
+        try:
+            # Closing the previous handle first, if any, avoids the
+            # "multiple access on port" warning on Linux.
+            if self.ser is not None:
+                try:
+                    self.ser.close()
+                except Exception:
+                    pass
+                self.ser = None
+            self.ser = serial.Serial(self._port, self._baudrate, timeout=1)
+            self.simulation_mode = False
+            self._reconnect_attempts = 0
+            if initial:
+                print(f"[COMMS] Real ESP32 connection established on port: {self._port}")
+            else:
+                print(f"[COMMS] Reconnected to ESP32 on {self._port}.")
+            if not hasattr(self, "read_thread") or self.read_thread is None or not self.read_thread.is_alive():
+                self._closed = False
+                self.read_thread = threading.Thread(target=self._hardware_read_loop, daemon=True)
+                self.read_thread.start()
+        except Exception as exc:
+            self.ser = None
+            self.simulation_mode = True
+            if initial:
+                print(f"[COMMS] Cannot connect to physical hardware: {exc}")
+                print("[COMMS] Falling back to SIL Simulation Mock Mode.")
+            else:
+                print(f"[COMMS] Reconnect failed: {exc}")
 
     # ----------------------------------------------------------------- send
     def send_velocity_cmd(self, left_speed, right_speed):
@@ -121,20 +165,52 @@ class ESP32Interface:
 
     # --------------------------------------------------------------- internals
     def _write_line(self, message):
-        try:
-            self.ser.write((message + "\n").encode())
-        except Exception as exc:
-            print(f"[COMMS] write failed: {exc}")
+        # One retry: if the first write raises (e.g. Errno 5 because
+        # the ESP32 USB-CDC just reset), attempt a single reconnect
+        # and retry the write before giving up.
+        for attempt in (1, 2):
+            if self.simulation_mode or self.ser is None:
+                return
+            try:
+                self.ser.write((message + "\n").encode())
+                return
+            except Exception as exc:
+                print(f"[COMMS] write failed (attempt {attempt}): {exc}")
+                if attempt == 1:
+                    self._try_reconnect()
+
+    def _try_reconnect(self):
+        """Try to recover the serial link after a transient I/O error."""
+        with self._reconnect_lock:
+            if self._closed or self._reconnect_attempts >= self._max_reconnect_attempts:
+                return
+            self._reconnect_attempts += 1
+            # Brief backoff so the USB-CDC enumeration can settle
+            # before we try to reopen the port.
+            time.sleep(0.5)
+            self._open_serial(initial=False)
+            if self.simulation_mode:
+                # Give up after exhausting attempts; fall back to mock.
+                self._closed = True
 
     def _hardware_read_loop(self):
-        while self.ser and self.ser.is_open:
+        while not self._closed:
+            if self.simulation_mode or self.ser is None:
+                # No hardware: just sleep and let any reconnect attempt
+                # restore the link from elsewhere.
+                time.sleep(0.05)
+                continue
             try:
-                if self.ser.in_waiting > 0:
+                if self.ser.is_open and self.ser.in_waiting > 0:
                     line = self.ser.readline().decode("utf-8", errors="ignore").strip()
                     self._handle_line(line)
             except Exception as exc:
-                print(f"[COMMS] read error: {exc}")
-                break
+                # Don't bail permanently -- the ESP32 USB-CDC port
+                # resets whenever /dev/ttyACM0 is reopened by anyone,
+                # which yields transient Errno 5 / "no data" errors.
+                # Sleep briefly, try to reopen, and keep going.
+                print(f"[COMMS] read error: {exc}; attempting reconnect")
+                self._try_reconnect()
             time.sleep(0.01)
 
     def _handle_line(self, line):

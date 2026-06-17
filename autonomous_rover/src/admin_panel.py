@@ -249,6 +249,10 @@ class AutoDriver(threading.Thread):
                 settings_path=self.admin_state.settings_path,
                 qr_override=self.slot_id,
                 dry_run=False,
+                # Reuse the admin panel's ESP32 link so we don't
+                # reopen /dev/ttyACM0 -- that would reset the ESP32
+                # USB-CDC device and produce Errno 5 I/O errors.
+                esp32=self.admin_state.esp32,
             )
 
             if self._stop_requested.is_set():
