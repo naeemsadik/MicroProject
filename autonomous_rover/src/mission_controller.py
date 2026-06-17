@@ -162,12 +162,30 @@ class MissionController:
             waypoints.pop(0)
         return waypoints
 
-    def _follow_waypoints(self, waypoints):
+    def _follow_waypoints(self, waypoints, should_stop=None):
+        """
+        Drive the robot through the given waypoints.
+
+        ``should_stop`` is an optional callable that returns True when the
+        caller wants the loop to abort promptly (e.g. user pressed the
+        manual Stop button). When provided, every internal sleep is
+        broken into small slices so the stop is honored within ~50 ms.
+        """
         nav_cfg = self.settings["navigation"]
         obstacle_stop_cm = float(nav_cfg.get("obstacle_stop_cm", 18.0))
         obstacle_resume_cm = float(nav_cfg.get("obstacle_resume_cm", 25.0))
         loop_delay = 1.0 / float(nav_cfg.get("loop_hz", 10))
         deadline = time.monotonic() + float(nav_cfg.get("max_mission_seconds", 180))
+
+        def _interruptible_sleep(total_s, slice_s=0.05):
+            if should_stop is None:
+                time.sleep(total_s)
+                return
+            end = time.monotonic() + total_s
+            while time.monotonic() < end:
+                if should_stop():
+                    return
+                time.sleep(min(slice_s, end - time.monotonic()))
 
         # Reset encoder / yaw counters at the start of the mission.
         try:
@@ -176,6 +194,11 @@ class MissionController:
             pass
 
         while waypoints and time.monotonic() < deadline:
+            if should_stop and should_stop():
+                print("[MISSION] Aborted by user.")
+                self.esp32.stop()
+                return
+
             telemetry = self.esp32.get_telemetry()
             if self.odometry_enabled:
                 pose = self.odometry.update(
@@ -190,6 +213,8 @@ class MissionController:
                 print(f"[SAFETY] Obstacle at {telemetry.distance_cm:.1f} cm; stopping.")
                 self.esp32.stop()
                 while telemetry.distance_cm < obstacle_resume_cm and time.monotonic() < deadline:
+                    if should_stop and should_stop():
+                        return
                     time.sleep(0.2)
                     telemetry = self.esp32.get_telemetry()
                 continue
@@ -200,7 +225,7 @@ class MissionController:
                 print(f"[NAV] Reached waypoint {target}")
                 waypoints.pop(0)
                 self.esp32.stop()
-                time.sleep(0.2)
+                _interruptible_sleep(0.2)
                 continue
 
             left_speed, right_speed = self.navigator.unicycle_to_differential(linear_v, angular_w)
@@ -211,12 +236,15 @@ class MissionController:
             else:
                 # Dead reckoning: do not loop continuously, send a single
                 # timed pulse per cycle and update pose in software.
-                self._dead_reckoning_step(pose, target)
+                self._dead_reckoning_step(pose, target, should_stop=should_stop)
+                if should_stop and should_stop():
+                    self.esp32.stop()
+                    return
 
-            time.sleep(loop_delay)
+            _interruptible_sleep(loop_delay)
 
         self.esp32.stop()
-        if waypoints:
+        if waypoints and not (should_stop and should_stop()):
             raise TimeoutError(f"Mission timed out with remaining waypoints: {waypoints}")
 
     def _clip_speeds(self, left_speed, right_speed):
@@ -225,8 +253,12 @@ class MissionController:
             int(max(-self.max_drive_speed, min(self.max_drive_speed, right_speed))),
         )
 
-    def _dead_reckoning_step(self, pose, target):
-        """Drive one timed step toward ``target`` using dead reckoning."""
+    def _dead_reckoning_step(self, pose, target, should_stop=None):
+        """Drive one timed step toward ``target`` using dead reckoning.
+
+        ``should_stop``, when provided, is a callable polled during the
+        timed sleep so the step aborts within ~50 ms of a user stop.
+        """
         x, y, theta = pose
         tx, ty = target
         dx = tx - x
@@ -241,6 +273,17 @@ class MissionController:
         # Cap each timed step to keep recovery from errors small.
         step_time_s = max(0.1, min(forward_time_s, 0.5))
 
+        def _interruptible_sleep(total_s, slice_s=0.05):
+            if should_stop is None:
+                time.sleep(total_s)
+                return False
+            end = time.monotonic() + total_s
+            while time.monotonic() < end:
+                if should_stop():
+                    return True
+                time.sleep(min(slice_s, end - time.monotonic()))
+            return False
+
         # First, rotate to face the target.
         desired_heading = math.atan2(dy, dx)
         heading_error = math.atan2(math.sin(desired_heading - theta), math.cos(desired_heading - theta))
@@ -253,17 +296,20 @@ class MissionController:
             else:
                 # Turn right: left wheel forward, right wheel backward
                 self.esp32.send_velocity_cmd(self.max_turn_speed, -self.max_turn_speed)
-            time.sleep(turn_time_s)
+            aborted = _interruptible_sleep(turn_time_s)
             self.esp32.stop()
-            time.sleep(0.1)
-            # Update internal heading from the commanded turn.
-            self.odometry.pose[2] = _wrap_angle(self.odometry.pose[2] + heading_error)
+            _interruptible_sleep(0.1)
+            if not aborted:
+                # Update internal heading from the commanded turn.
+                self.odometry.pose[2] = _wrap_angle(self.odometry.pose[2] + heading_error)
             return
 
         # Drive forward for a small timed slice.
         self.esp32.send_velocity_cmd(self.max_drive_speed, self.max_drive_speed)
-        time.sleep(step_time_s)
+        aborted = _interruptible_sleep(step_time_s)
         self.esp32.stop()
+        if aborted:
+            return
 
         # Update the in-software pose with the distance we just commanded.
         new_x = self.odometry.pose[0] + (self.max_drive_speed / 255.0) * self.forward_speed_cm_per_s * step_time_s / float(self.settings["map"].get("resolution_cm_per_px", 1.0)) * math.cos(self.odometry.pose[2])

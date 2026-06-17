@@ -294,9 +294,17 @@ class AutoDriver(threading.Thread):
                         driver_self.waypoints_done = total - len(remaining)
                     # Pop one waypoint at a time, delegating to the
                     # original method which already handles steering,
-                    # obstacle stop, and dead-reckoning.
+                    # obstacle stop, and dead-reckoning. Pass a
+                    # should_stop callback so the loop aborts within
+                    # ~50 ms when the user presses Stop.
                     controller._follow_waypoints = follow_waypoints
-                    controller._follow_waypoints(remaining[:1])
+                    controller._follow_waypoints(
+                        remaining[:1],
+                        should_stop=driver_self._stop_requested.is_set,
+                    )
+                    if driver_self._stop_requested.is_set():
+                        controller.esp32.stop()
+                        break
                     remaining.pop(0)
                 with driver_self._lock:
                     driver_self.waypoints_done = total - len(remaining)
@@ -642,7 +650,17 @@ class AdminState:
         duration = float(self.settings.get("admin", {}).get("nudge_duration_s", 0.35))
 
         if action == "stop":
+            # Halt motors immediately AND abort any running auto-drive,
+            # otherwise the waypoint loop will send a fresh velocity
+            # command within ~100 ms and the rover will keep moving.
             self.esp32.stop()
+            try:
+                with self.auto_lock:
+                    driver = self.auto_driver
+                if driver is not None:
+                    driver.request_stop()
+            except Exception:
+                pass
             self.last_command = "stop"
             self.log("Sent stop command.")
             return
