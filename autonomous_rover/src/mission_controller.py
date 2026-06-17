@@ -41,7 +41,7 @@ class MissionController:
     The mode is selected by ``odometry.enabled`` in ``config/settings.yaml``.
     """
 
-    def __init__(self, settings_path=None, qr_override=None, dry_run=False, regenerate_map=False, esp32=None):
+    def __init__(self, settings_path=None, qr_override=None, dry_run=False, regenerate_map=False):
         self.project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         self.settings_path = settings_path or self._project_path("config/settings.yaml")
         self.settings = self._load_settings(self.settings_path)
@@ -50,18 +50,11 @@ class MissionController:
         self.regenerate_map = regenerate_map
         self.odometry_enabled = bool(self.settings.get("odometry", {}).get("enabled", False))
 
-        if esp32 is not None:
-            # Reuse the caller-provided link (e.g. the admin panel's
-            # ESP32Interface) so we don't open /dev/ttyACM0 twice --
-            # the second open resets the ESP32 USB-CDC and triggers
-            # Errno 5 storms.
-            self.esp32 = esp32
-        else:
-            serial_cfg = self.settings["serial"]
-            self.esp32 = ESP32Interface(
-                port=serial_cfg.get("port", "/dev/ttyACM0"),
-                baudrate=int(serial_cfg.get("baudrate", 115200)),
-            )
+        serial_cfg = self.settings["serial"]
+        self.esp32 = ESP32Interface(
+            port=serial_cfg.get("port", "/dev/ttyACM0"),
+            baudrate=int(serial_cfg.get("baudrate", 115200)),
+        )
         if self.esp32.simulation_mode:
             print("[MISSION] ESP32 is not connected; switching to dry-run navigation.")
             self.dry_run = True
@@ -169,30 +162,12 @@ class MissionController:
             waypoints.pop(0)
         return waypoints
 
-    def _follow_waypoints(self, waypoints, should_stop=None):
-        """
-        Drive the robot through the given waypoints.
-
-        ``should_stop`` is an optional callable that returns True when the
-        caller wants the loop to abort promptly (e.g. user pressed the
-        manual Stop button). When provided, every internal sleep is
-        broken into small slices so the stop is honored within ~50 ms.
-        """
+    def _follow_waypoints(self, waypoints):
         nav_cfg = self.settings["navigation"]
         obstacle_stop_cm = float(nav_cfg.get("obstacle_stop_cm", 18.0))
         obstacle_resume_cm = float(nav_cfg.get("obstacle_resume_cm", 25.0))
         loop_delay = 1.0 / float(nav_cfg.get("loop_hz", 10))
         deadline = time.monotonic() + float(nav_cfg.get("max_mission_seconds", 180))
-
-        def _interruptible_sleep(total_s, slice_s=0.05):
-            if should_stop is None:
-                time.sleep(total_s)
-                return
-            end = time.monotonic() + total_s
-            while time.monotonic() < end:
-                if should_stop():
-                    return
-                time.sleep(min(slice_s, end - time.monotonic()))
 
         # Reset encoder / yaw counters at the start of the mission.
         try:
@@ -201,11 +176,6 @@ class MissionController:
             pass
 
         while waypoints and time.monotonic() < deadline:
-            if should_stop and should_stop():
-                print("[MISSION] Aborted by user.")
-                self.esp32.stop()
-                return
-
             telemetry = self.esp32.get_telemetry()
             if self.odometry_enabled:
                 pose = self.odometry.update(
@@ -220,8 +190,6 @@ class MissionController:
                 print(f"[SAFETY] Obstacle at {telemetry.distance_cm:.1f} cm; stopping.")
                 self.esp32.stop()
                 while telemetry.distance_cm < obstacle_resume_cm and time.monotonic() < deadline:
-                    if should_stop and should_stop():
-                        return
                     time.sleep(0.2)
                     telemetry = self.esp32.get_telemetry()
                 continue
@@ -232,7 +200,7 @@ class MissionController:
                 print(f"[NAV] Reached waypoint {target}")
                 waypoints.pop(0)
                 self.esp32.stop()
-                _interruptible_sleep(0.2)
+                time.sleep(0.2)
                 continue
 
             left_speed, right_speed = self.navigator.unicycle_to_differential(linear_v, angular_w)
@@ -243,15 +211,12 @@ class MissionController:
             else:
                 # Dead reckoning: do not loop continuously, send a single
                 # timed pulse per cycle and update pose in software.
-                self._dead_reckoning_step(pose, target, should_stop=should_stop)
-                if should_stop and should_stop():
-                    self.esp32.stop()
-                    return
+                self._dead_reckoning_step(pose, target)
 
-            _interruptible_sleep(loop_delay)
+            time.sleep(loop_delay)
 
         self.esp32.stop()
-        if waypoints and not (should_stop and should_stop()):
+        if waypoints:
             raise TimeoutError(f"Mission timed out with remaining waypoints: {waypoints}")
 
     def _clip_speeds(self, left_speed, right_speed):
@@ -260,12 +225,8 @@ class MissionController:
             int(max(-self.max_drive_speed, min(self.max_drive_speed, right_speed))),
         )
 
-    def _dead_reckoning_step(self, pose, target, should_stop=None):
-        """Drive one timed step toward ``target`` using dead reckoning.
-
-        ``should_stop``, when provided, is a callable polled during the
-        timed sleep so the step aborts within ~50 ms of a user stop.
-        """
+    def _dead_reckoning_step(self, pose, target):
+        """Drive one timed step toward ``target`` using dead reckoning."""
         x, y, theta = pose
         tx, ty = target
         dx = tx - x
@@ -280,17 +241,6 @@ class MissionController:
         # Cap each timed step to keep recovery from errors small.
         step_time_s = max(0.1, min(forward_time_s, 0.5))
 
-        def _interruptible_sleep(total_s, slice_s=0.05):
-            if should_stop is None:
-                time.sleep(total_s)
-                return False
-            end = time.monotonic() + total_s
-            while time.monotonic() < end:
-                if should_stop():
-                    return True
-                time.sleep(min(slice_s, end - time.monotonic()))
-            return False
-
         # First, rotate to face the target.
         desired_heading = math.atan2(dy, dx)
         heading_error = math.atan2(math.sin(desired_heading - theta), math.cos(desired_heading - theta))
@@ -303,20 +253,17 @@ class MissionController:
             else:
                 # Turn right: left wheel forward, right wheel backward
                 self.esp32.send_velocity_cmd(self.max_turn_speed, -self.max_turn_speed)
-            aborted = _interruptible_sleep(turn_time_s)
+            time.sleep(turn_time_s)
             self.esp32.stop()
-            _interruptible_sleep(0.1)
-            if not aborted:
-                # Update internal heading from the commanded turn.
-                self.odometry.pose[2] = _wrap_angle(self.odometry.pose[2] + heading_error)
+            time.sleep(0.1)
+            # Update internal heading from the commanded turn.
+            self.odometry.pose[2] = _wrap_angle(self.odometry.pose[2] + heading_error)
             return
 
         # Drive forward for a small timed slice.
         self.esp32.send_velocity_cmd(self.max_drive_speed, self.max_drive_speed)
-        aborted = _interruptible_sleep(step_time_s)
+        time.sleep(step_time_s)
         self.esp32.stop()
-        if aborted:
-            return
 
         # Update the in-software pose with the distance we just commanded.
         new_x = self.odometry.pose[0] + (self.max_drive_speed / 255.0) * self.forward_speed_cm_per_s * step_time_s / float(self.settings["map"].get("resolution_cm_per_px", 1.0)) * math.cos(self.odometry.pose[2])

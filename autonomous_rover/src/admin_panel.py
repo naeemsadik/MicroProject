@@ -160,16 +160,12 @@ class PosePublisher(threading.Thread):
         super().__init__(daemon=True)
         self.controller = controller
         self.admin_state = admin_state
-        # NOTE: must NOT be named ``self._stop`` -- Thread._stop() is the
-        # internal method Thread.join() invokes while waiting on the
-        # thread to finish, and shadowing it with an Event makes
-        # join() raise "TypeError: 'Event' object is not callable".
-        self.stop_event = stop_event
+        self._stop = stop_event
         self.period = 1.0 / max(hz, 0.5)
 
     def run(self):
         next_t = time.monotonic()
-        while not self.stop_event.is_set():
+        while not self._stop.is_set():
             try:
                 pose = self.controller.odometry.pose
                 self.admin_state.set_pose(pose[0], pose[1], pose[2], source="auto")
@@ -179,7 +175,7 @@ class PosePublisher(threading.Thread):
             sleep_for = next_t - time.monotonic()
             if sleep_for > 0:
                 # Wait on the event so we exit quickly on stop.
-                self.stop_event.wait(sleep_for)
+                self._stop.wait(sleep_for)
             else:
                 # Falling behind; resync to avoid runaway.
                 next_t = time.monotonic()
@@ -249,10 +245,6 @@ class AutoDriver(threading.Thread):
                 settings_path=self.admin_state.settings_path,
                 qr_override=self.slot_id,
                 dry_run=False,
-                # Reuse the admin panel's ESP32 link so we don't
-                # reopen /dev/ttyACM0 -- that would reset the ESP32
-                # USB-CDC device and produce Errno 5 I/O errors.
-                esp32=self.admin_state.esp32,
             )
 
             if self._stop_requested.is_set():
@@ -276,6 +268,7 @@ class AutoDriver(threading.Thread):
             else:
                 destination = controller.slots.get_destination(normalize_slot_id(self.slot_id))
                 target = destination.navigation_target
+            target = destination.navigation_target
             pose = controller.odometry.pose
             start = (int(round(pose[0])), int(round(pose[1])))
             dense = controller.planner.plan_path(start, target)
@@ -301,17 +294,9 @@ class AutoDriver(threading.Thread):
                         driver_self.waypoints_done = total - len(remaining)
                     # Pop one waypoint at a time, delegating to the
                     # original method which already handles steering,
-                    # obstacle stop, and dead-reckoning. Pass a
-                    # should_stop callback so the loop aborts within
-                    # ~50 ms when the user presses Stop.
+                    # obstacle stop, and dead-reckoning.
                     controller._follow_waypoints = follow_waypoints
-                    controller._follow_waypoints(
-                        remaining[:1],
-                        should_stop=driver_self._stop_requested.is_set,
-                    )
-                    if driver_self._stop_requested.is_set():
-                        controller.esp32.stop()
-                        break
+                    controller._follow_waypoints(remaining[:1])
                     remaining.pop(0)
                 with driver_self._lock:
                     driver_self.waypoints_done = total - len(remaining)
@@ -657,17 +642,7 @@ class AdminState:
         duration = float(self.settings.get("admin", {}).get("nudge_duration_s", 0.35))
 
         if action == "stop":
-            # Halt motors immediately AND abort any running auto-drive,
-            # otherwise the waypoint loop will send a fresh velocity
-            # command within ~100 ms and the rover will keep moving.
             self.esp32.stop()
-            try:
-                with self.auto_lock:
-                    driver = self.auto_driver
-                if driver is not None:
-                    driver.request_stop()
-            except Exception:
-                pass
             self.last_command = "stop"
             self.log("Sent stop command.")
             return
