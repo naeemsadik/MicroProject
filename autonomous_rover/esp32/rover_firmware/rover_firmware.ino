@@ -257,12 +257,17 @@ void driveLeftMotor(int speed) {
 
 void driveRightMotor(int speed) {
   int magnitude = abs(speed);
+  // Right motor is wired with reversed IN3/IN4 polarity relative to
+  // the left motor, so swap the "forward" vs "reverse" branch here.
+  // Without this, a positive speed on both wheels makes the left
+  // wheel go forward and the right wheel go backward, so the rover
+  // drives backward and turning is the only thing that works.
   if (speed > 0) {
-    digitalWrite(MOTOR_IN3_PIN, LOW);
-    digitalWrite(MOTOR_IN4_PIN, HIGH);
-  } else if (speed < 0) {
     digitalWrite(MOTOR_IN3_PIN, HIGH);
     digitalWrite(MOTOR_IN4_PIN, LOW);
+  } else if (speed < 0) {
+    digitalWrite(MOTOR_IN3_PIN, LOW);
+    digitalWrite(MOTOR_IN4_PIN, HIGH);
   } else {
     digitalWrite(MOTOR_IN3_PIN, LOW);
     digitalWrite(MOTOR_IN4_PIN, LOW);
