@@ -4,8 +4,12 @@
 >
 > Then open `http://<RPi4-IP>:8080` from a browser. The admin panel
 > is the **only** thing you need to run. From the page you can
-> watch the camera, drive manually, open/close the gripper, and
-> start an autonomous delivery to any slot.
+> watch the camera, see the warehouse map update **live** as the
+> rover moves, drive manually with a speed slider, open/close the
+> gripper, set the warehouse length/width, and start an autonomous
+> delivery to any slot. There's also an **EMERGENCY STOP** button,
+> **Return home**, **Reset pose**, a verbose log panel with
+> auto-scroll, and a **Download .log** button for debugging.
 
 This document is a complete, end-to-end explanation of the
 warehouse rover: hardware, wiring, firmware, every Python module,
